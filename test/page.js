@@ -1,4 +1,4 @@
-import Cicero from "../lib/Cicero.js";
+import Cicero from "../src/Cicero.js";
 
 const runRouterTests = async () => {
     console.log("Starting Router Tests...");
@@ -12,7 +12,6 @@ const runRouterTests = async () => {
 
     // Initialize Router
     const router = new Cicero.Router({ root: "" });
-    router.setPageLoader(mockPageLoader);
 
     // Set up routes
     router
@@ -33,7 +32,10 @@ const runRouterTests = async () => {
         console.log(`Navigating to: ${hash}`);
         location.hash = hash;
         setTimeout(() => {
-            if (loadedPage && loadedPage.page === expectedPage && JSON.stringify(loadedPage.params) === JSON.stringify(expectedParams)) {
+            if (
+                loadedPage && loadedPage.page === expectedPage
+                && JSON.stringify(loadedPage.params) === JSON.stringify(expectedParams)
+            ) {
                 console.log(`✅ PASS: ${hash} -> ${expectedPage}`);
             } else {
                 console.error(`❌ FAIL: ${hash} -> Expected ${expectedPage}, got ${loadedPage ? loadedPage.page : "nothing"}\n`, loadedPage.params, expectedParams);
@@ -62,7 +64,7 @@ const runRouterTests = async () => {
     // Run tests
     await testRoute("#/home", "home");
     await testRoute("#/pages/test/", "test", { key: "test" });
-    await testRoute("#/bobby/something/deep/and/yet/deeper", "globglob");
+    await testRoute("#/bobby/something/deep/and/yet/deeper", "globglob", { "glob1": "something/deep/and/yet", "glob2": "deeper" });
     await testRoute("#/pages/test/something/deep", "rest", { key: "test", rest: "something/deep", fullPath: "/pages/test/something/deep" });
 
     // Check if <base> updates correctly
