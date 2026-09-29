@@ -1,135 +1,203 @@
 class Router {
     /**
-     * @param {Object} [options]
-     * @param {string} [options.root=""] - A base path that prefixes all routes.
+     * Creates a cicero router instance
      */
-    constructor({ root = "" } = {}) {
-        this.root = root;
+    constructor() {
         this.routes = [];
-        this.redirects = [];
-        this.pageLoader = null; // A custom function to load pages.
     }
 
+    //
+    // Route creators
+    //
+
     /**
-     * Set a custom page-loading function. The function will be invoked in route callbacks.
-     * @param {Function} loader - A function that takes parameters (for example, page key or params) and loads content.
+     * Add a route to match for
+     * @param {String} fragment The path to match for
+     * @param {Function} callback The callack for the route
+     * @returns the router instance
      */
-    setPageLoader(loader) {
-        this.pageLoader = loader;
+    route(fragment, callback, sethash = true) {
+        const route = {
+            fragment,
+            callback,
+            sethash
+        };
+        this.routes.push(route);
         return this;
     }
 
     /**
-     * Define a route with a pattern and a callback.
-     * @param {string} pattern - A URL pattern like "/pages/:key" or "/pages/:key/*rest".
-     * @param {Function} callback - A function to call when the route matches. Receives (params, fullPath).
-     * @param {boolean} [updateHistory=true] - (For hash routes the browser history is automatic, but you could use this flag if needed.)
+     * Add a route for a document
+     * @param {String} fragment The path to match for
+     * @param {String} path The path to the document to load
+     * @param {String} target Target querystring for node to load document content into. Defaults to "body"
      */
-    route(pattern, callback, updateHistory = true) {
-        this.routes.push({ pattern, callback, updateHistory });
-        return this;
+    get(fragment, path, target = "body") {
+        return this.route(fragment, () => this.loadPage(path, document.querySelector(target)));
     }
 
     /**
-     * Define a redirect from one pattern to a new path.
-     * @param {string} fromPattern - Pattern to match the current hash.
-     * @param {string} toPath - New path to redirect to (without the router root).
+     * Add a route for a redirect
+     * @param {String} fragment The path to match for
+     * @param {String} path The path to redirect to
      */
-    redirect(fromPattern, toPath) {
-        this.redirects.push({ fromPattern, toPath });
-        return this;
+    redirect(fragment, path) {
+        return this.route(fragment, () => this.navigate(path, true), false);
     }
 
+    //
+    // Document manager
+    //
+
     /**
-     * Start the router by processing the current hash.
+     * Loads a document
+     * @param {String} uri The path to the document to load
+     * @param {Node} target The node to load the document's body into
      */
-    start() {
-        this.handleRouteChange();
-        // Listen to hash changes.
-        window.addEventListener("hashchange", e => this.handleRouteChange(new URL(e.newURL).hash));
+    async loadPage(uri, target = document.body) {
+        const html = await fetch(uri).then(res => res.text());
+        const newdoc = new DOMParser().parseFromString(html, 'text/html');
+
+        // merge heads
+        document.head.append(...newdoc.head.childNodes);
+
+        // change target/body
+        target.innerHTML = "";
+        target.append(...newdoc.body.childNodes);
+        target.querySelectorAll("script").forEach(Cicero.replaceAndRunScript);
+    }
+    static replaceAndRunScript(oldScript) {
+        const newScript = document.createElement('script');
+        const attrs = Array.from(oldScript.attributes);
+        for (const { name, value } of attrs) {
+            newScript[name] = value;
+        }
+        newScript.append(oldScript.textContent);
+        oldScript.replaceWith(newScript);
     }
 
-    /**
-     * Update (or create) a <base> element so that relative URLs in the loaded page resolve properly.
-     * @param {string} path - The current path (from the hash) used to compute a base URL.
-     */
-    updateBaseHref(path) {
-        let base = document.querySelector("base");
-        if (!base) {
-            base = document.createElement("base");
-            document.head.appendChild(base);
-        }
-        // Compute a base URL: combine the router's root with the directory of the current path.
-        let baseHref = this.root || "";
-        if (path) {
-            // Ensure path ends with a "/" so relative paths resolve against the directory.
-            if (!path.endsWith("/")) {
-                path = path.substring(0, path.lastIndexOf("/") + 1);
-            }
-            baseHref += path;
-        }
-        base.setAttribute("href", baseHref);
-    }
+    //
+    // Navigation and setup
+    //
 
     /**
-     * Process the current hash, apply any redirects, update the <base>, and then execute the matching route.
+     * Navigate to the route defined by the current hash
      */
-    handleRouteChange(hash) {
-        // Get the hash (or default to "/")
-        hash = hash?.slice(1) || location.hash.slice(1) || "/";
-        console.log(hash)
-        // If a router root is defined and present in the hash, remove it.
-        if (this.root && hash.startsWith(this.root)) {
-            hash = hash.slice(this.root.length);
-        }
+    navigate(fragment, init) {
+        const path = this.formatPath(fragment).pathname;
 
-        // First check for redirects.
-        for (const rd of this.redirects) {
-            const match = this.matchPath(hash, rd.fromPattern);
-            if (match) {
-                const newPath = rd.toPath;
-                location.hash = this.root + newPath;
-                return;
-            }
-        }
+        if (fragment == undefined) throw new Error("why?");
 
-        // Update <base> so that relative URLs in the loaded content work.
-        this.updateBaseHref(hash);
+        if (this.currentPath() == path && !init) return false;
 
-        // Process routes.
         for (const route of this.routes) {
-            const match = this.matchPath(hash, route.pattern);
-            if (match) {
-                // Execute the route callback with extracted parameters and the full path.
-                route.callback(match.params, hash);
-                return;
+            const params = this.match(route.fragment, path);
+            if (params) {
+                route.callback(params, path);
+                if (route.sethash) this.navigateTo(fragment);
+                return this;
             }
         }
 
-        // If no route matched, you can handle a 404 here.
-        console.warn("No route matched: " + hash);
+        return true;
     }
 
     /**
-     * Match a path against a pattern that can include named parameters (e.g., :key) and wildcards (e.g., *rest).
-     * Returns an object with a "params" key if the pattern matches, or null otherwise.
-     * @param {string} path - The current path (from the hash).
-     * @param {string} pattern - The route pattern.
+     * Sets the hash to the new fragment relative to the current one, then reloads the page
+     * @param {String} fragment the path to navigate to
      */
-    matchPath(path, pattern) {
+    navigateTo(fragment) {
+        const path = this.formatPath(fragment).pathname;
+
+        if (path == this.currentPath()) return false;
+
+        const here = sessionStorage.ciceronow++ + 1
+        history.pushState({ ciceronow: here }, null, "#" + path);
+        this.onState();
+
+        return true;
+    }
+
+    /**
+     * Creates a URL resulting from navigating from the current hash path with the fragment 
+     * @param {String} fragment any url path
+     * @returns {URL}
+     */
+    formatPath(fragment) {
+        return new URL(
+            fragment,
+            new URL(
+                this.currentPath(),
+                location.origin
+            )
+        )
+    }
+
+    /**
+     * Returns the current hash value without the leading #
+     * @returns {String} the current hash value, expected to be a path
+     */
+    currentPath() {
+        return window.location.hash.slice(1);
+    }
+
+    match(routePath, currentPath) {
         // improved path matching
         const routereg = new RegExp(
-            `^${pattern
-                .replace(/:([\w]+)/g, "(?<$1>[\\w\\-.~%()]+)")
-                .replace(/\*([\w]+)/g, "(?<$1>[\\w\\-.~%()/]+)")}$`
+            `^${routePath
+                .replace(/:([\w]+)/g, "(?<$1>[^\\x00-\\x1f\\x7f <>#%\"{}|\\\\\\^[\\]`;/?:@&=+$,]+)")
+                .replace(/\*([\w]+)/g, "(?<$1>[^\\x00-\\x1f\\x7f <>#%\"{}|\\\\\\^[\\]`;?:@&=+$,]+)")}$`
         );
 
-        console.log(routereg)
-
-        const match = path.match(routereg);
-        return match ? { params: match.groups || {} } : null;
+        const match = currentPath.match(routereg);
+        return match ? match.groups || {} : null;
     }
-}
+
+    onState() {
+        const past = !!+sessionStorage.ciceropast;
+        const here = +history.state?.ciceronow;
+        const now = +sessionStorage.ciceronow;
+
+        const ispast = here < now;
+        sessionStorage.ciceropast = +ispast;
+
+        this.navigate(this.currentPath(), ispast || (past && here == now));
+    }
+
+    start() {
+        if (!("ciceronow" in sessionStorage)) sessionStorage.ciceronow = 0;
+        if (!("ciceropast" in sessionStorage)) sessionStorage.ciceropast = 0;
+
+        this.navigate(this.currentPath(), true);
+
+        // Capture clicks on <a> links and use the router's route if available
+        document.addEventListener('click', (e) => {
+            if (e.target.tagName === 'A' && e.target.getAttribute('href')) {
+                const a = e.target
+                const href = a.getAttribute('href');
+
+                if ( // don't touch external links, etc
+                    a.getAttribute("download")
+                    || a.getAttribute("target")
+                    || a.getAttribute("rel") == "external"
+                    || new URL(href, location).origin !== location.origin
+                    || new URL(href, location).hash
+                ) return;
+
+                e.preventDefault();
+
+                sessionStorage.ciceropast = 0;
+                this.navigate(href);
+            }
+        });
+
+        // Listen for state changes
+        window.addEventListener('popstate', e => this.onState(e));
+        window.addEventListener('pushstate', e => this.onState(e));
+
+        return this;
+    };
+};
 
 export { Router };
 export default Router;
