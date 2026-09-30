@@ -31,6 +31,7 @@ class Router {
      * @param {String} fragment The path to match for
      * @param {String} path The path to the document to load
      * @param {String} target Target querystring for node to load document content into. Defaults to "body"
+     * @deprecated
      */
     get(fragment, path, target = "body") {
         return this.route(fragment, () => this.loadPage(path, document.querySelector(target)));
@@ -42,7 +43,7 @@ class Router {
      * @param {String} path The path to redirect to
      */
     redirect(fragment, path) {
-        return this.route(fragment, () => this.navigate(path, true), false);
+        return this.route(fragment, () => this.replaceHash(path), false);
     }
 
     //
@@ -53,10 +54,11 @@ class Router {
      * Loads a document
      * @param {String} uri The path to the document to load
      * @param {Node} target The node to load the document's body into
+     * @deprecated 
      */
     async loadPage(uri, target = document.body) {
         const html = await fetch(uri).then(res => res.text());
-        const newdoc = new DOMParser().parseFromString(html, 'text/html');
+        const newdoc = new DOMParser().parseFromString(html, "text/html");
 
         // merge heads
         document.head.append(...newdoc.head.childNodes);
@@ -67,7 +69,7 @@ class Router {
         target.querySelectorAll("script").forEach(Cicero.replaceAndRunScript);
     }
     static replaceAndRunScript(oldScript) {
-        const newScript = document.createElement('script');
+        const newScript = document.createElement("script");
         const attrs = Array.from(oldScript.attributes);
         for (const { name, value } of attrs) {
             newScript[name] = value;
@@ -83,23 +85,21 @@ class Router {
     /**
      * Navigate to the route defined by the current hash
      */
-    navigate(fragment, init) {
-        const path = this.formatPath(fragment).pathname;
+    navigate() {
+        const path = this.currentPath();
 
-        if (fragment == undefined) throw new Error("why?");
-
-        if (this.currentPath() == path && !init) return false;
+        console.log("navigate: ", path);
 
         for (const route of this.routes) {
             const params = this.match(route.fragment, path);
             if (params) {
                 route.callback(params, path);
-                if (route.sethash) this.navigateTo(fragment);
-                return this;
+                // if (route.sethash) this.navigateTo(fragment);
+                return true;
             }
         }
 
-        return true;
+        return false;
     }
 
     /**
@@ -111,11 +111,49 @@ class Router {
 
         if (path == this.currentPath()) return false;
 
-        const here = sessionStorage.ciceronow++ + 1
-        history.pushState({ ciceronow: here }, null, "#" + path);
-        this.onState();
+        // location.hash = path;
+
+        const targetUrl = new URL(window.location.href);
+        targetUrl.hash = path;
+
+        // 2. Force a clean, isolated history frame via pushState.
+        // This stops the browser from skipping this entry after a reload.
+        window.history.pushState({ path }, null, "#" + path);
+
+        this.navigate();
 
         return true;
+    }
+
+    /**
+     * Replaces the current history entry instead of pushing a new one (Crucial for Redirects)
+     */
+    replaceHash(fragment) {
+        const path = this.formatPath(fragment).pathname;
+        if (path === this.currentPath()) return false;
+
+        const url = new URL(window.location.href);
+        url.hash = path;
+        window.location.replace(url.href);
+        return true;
+    }
+
+    handleAnchor(a) {
+        const href = a.getAttribute("href");
+        if (this.isExternalOrDownload(a, href)) return false;
+
+        this.navigateTo(href);
+        return true;
+    }
+
+    isExternalOrDownload(a, href) {
+        return (
+            a.getAttribute("download") ||
+            a.getAttribute("target") ||
+            a.getAttribute("rel") === "external" ||
+            new URL(href, location).origin !== location.origin ||
+            new URL(href, location).hash
+        );
     }
 
     /**
@@ -138,7 +176,8 @@ class Router {
      * @returns {String} the current hash value, expected to be a path
      */
     currentPath() {
-        return window.location.hash.slice(1);
+        const hash = window.location.hash || "#/";
+        return hash.split("?")[0].replace("#", "") || "/";
     }
 
     match(routePath, currentPath) {
@@ -153,47 +192,29 @@ class Router {
         return match ? match.groups || {} : null;
     }
 
-    onState() {
-        const past = !!+sessionStorage.ciceropast;
-        const here = +history.state?.ciceronow;
-        const now = +sessionStorage.ciceronow;
-
-        const ispast = here < now;
-        sessionStorage.ciceropast = +ispast;
-
-        this.navigate(this.currentPath(), ispast || (past && here == now));
-    }
-
     start() {
-        if (!("ciceronow" in sessionStorage)) sessionStorage.ciceronow = 0;
-        if (!("ciceropast" in sessionStorage)) sessionStorage.ciceropast = 0;
+        const currentPathname = this.currentPath();
+        const initialUrl = new URL(window.location.href);
+        initialUrl.hash = currentPathname;
 
-        this.navigate(this.currentPath(), true);
+        window.history.replaceState({ path: currentPathname }, "", initialUrl.href);
+
+        window.addEventListener("popstate", () => this.navigate());
+
+        document.readyState === "loading"
+            ? window.addEventListener("DOMContentLoaded", () => this.navigate())
+            : this.navigate();
+
 
         // Capture clicks on <a> links and use the router's route if available
-        document.addEventListener('click', (e) => {
-            if (e.target.tagName === 'A' && e.target.getAttribute('href')) {
-                const a = e.target
-                const href = a.getAttribute('href');
+        document.addEventListener("click", (e) => {
+            const a = e.target.closest("a");
+            if (!a) return;
 
-                if ( // don't touch external links, etc
-                    a.getAttribute("download")
-                    || a.getAttribute("target")
-                    || a.getAttribute("rel") == "external"
-                    || new URL(href, location).origin !== location.origin
-                    || new URL(href, location).hash
-                ) return;
+            if (!this.handleAnchor(a)) return;
 
-                e.preventDefault();
-
-                sessionStorage.ciceropast = 0;
-                this.navigate(href);
-            }
+            e.preventDefault();
         });
-
-        // Listen for state changes
-        window.addEventListener('popstate', e => this.onState(e));
-        window.addEventListener('pushstate', e => this.onState(e));
 
         return this;
     };
