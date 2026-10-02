@@ -151,6 +151,7 @@ class Router {
             a.getAttribute("download") ||
             a.getAttribute("target") ||
             a.getAttribute("rel") === "external" ||
+            href.startsWitch("javascript") ||
             new URL(href, location).origin !== location.origin ||
             new URL(href, location).hash
         );
